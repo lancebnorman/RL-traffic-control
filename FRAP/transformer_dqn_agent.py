@@ -13,7 +13,7 @@ def slice_tensor(x, index):
     if len(x_shape) == 3:
         return x[:, index, :]
     elif len(x_shape) == 2:
-        return Reshape((1, ))(x[:, index])
+        return Reshape((1, ))(x[:, index, :])
 
 
 
@@ -82,24 +82,35 @@ def competing_network(p, dic_agent_conf, num_actions):
     return q_values
 
 def relation(x, dic_traffic_env_conf):
-    relations = []
-    for p1 in dic_traffic_env_conf["PHASE"]:
-        zeros = [0, 0, 0, 0, 0, 0, 0]
-        count = 0
-        for p2 in dic_traffic_env_conf["PHASE"]:
-            if p1 == p2:
-                continue
-            m1 = p1.split("_")
-            m2 = p2.split("_")
-            if len(list(set(m1 + m2))) == 3:
-                zeros[count] = 1
-            count += 1
-        relations.append(zeros)
-    relations = np.array(relations).reshape(1, 8, 7)
-    batch_size = K.shape(x)[0]
-    constant = K.constant(relations)
-    constant = K.tile(constant, (batch_size, 1, 1))
-    return constant
+  def _build_base_lane_embed(phase_lst):
+    cardinal_embedding = {'W': 0, 'E': 1, 'N': 2, 'S': 3}
+    direction_embedding = {'L': 0, 'T': 1}
+    phase_embed = []
+    for lane in phase_lst:
+      lane_embed = [cardinal_embedding[lane[0]], direction_embedding[lane[1]]]
+      phase_embed += lane_embed
+    phase_embed = np.array(phase_embed)
+    return phase_embed
+
+  relations = []
+  for p1 in dic_traffic_env_conf["PHASE"]:
+    zeros = np.zeros((7,4))
+    count = 0
+    for p2 in dic_traffic_env_conf["PHASE"]:
+      if p1 == p2:
+        continue
+      m1 = p1.split('_')
+      m2 = p2.split('_')
+      if len(list(set(m1 + m2))) == 3: # overlapping lane
+        phase_embedding = _build_base_lane_embed(m2)
+        zeros[count, :] = phase_embedding
+      count += 1
+    relations.append(zeros)
+  relations = np.array(relations).reshape((1, 8, 7, 4))
+  batch_size = K.shape(x)[0]
+  constant = K.constant(relations)
+  constant = K.tile(constant, (batch_size, 1, 1, 1))
+  return constant
 
 
 class TransferDQNAgent(NetworkAgent):
@@ -107,18 +118,29 @@ class TransferDQNAgent(NetworkAgent):
     def build_network(self):
         dic_input_node = {}
         feature_shape = {}
-        for feature_name in self.dic_traffic_env_conf["LIST_STATE_FEATURE"]:
-            if "phase" in feature_name and self.dic_traffic_env_conf["BINARY_PHASE_EXPANSION"]:
-                _shape = (self.dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()][0] * self.num_lanes * 4,)
-            elif "phase" in feature_name and not self.dic_traffic_env_conf["BINARY_PHASE_EXPANSION"]:
-                _shape = self.dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()]
+        trf_encoder_hidden_dim = 4 # want output shape to be 4 based on paper
+        add_hidden_dim_to_inp = lambda x: (x[0], trf_encoder_hidden_dim)
+        for feature_name in dic_traffic_env_conf["LIST_STATE_FEATURE"]:
+            if "phase" in feature_name and dic_traffic_env_conf["BINARY_PHASE_EXPANSION"]:
+                _shape = (dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()][0] * num_lanes * 4, trf_encoder_hidden_dim, )
+            elif "phase" in feature_name and not dic_traffic_env_conf["BINARY_PHASE_EXPANSION"]:
+                _shape = add_hidden_dim_to_inp(dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()])
             else:
-                _shape = (self.dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()][0] * self.num_lanes,)
+                _shape = (dic_traffic_env_conf["DIC_FEATURE_DIM"]["D_" + feature_name.upper()][0] * num_lanes, trf_encoder_hidden_dim, )
             dic_input_node[feature_name] = Input(shape=_shape, name="input_" + feature_name)
             feature_shape[feature_name] = _shape[0]
 
-        p = Activation('sigmoid')(Embedding(2, 4, input_length=8)(dic_input_node["cur_phase"]))
-        # p = TransformerEncoder()
+            dic_input_node[feature_name] = Input(shape=_shape, name="input_" + feature_name)
+            feature_shape[feature_name] = _shape[0]
+
+            # encoder input (batch_size, seq_len, hidden_dim)
+            # transformer makes sense for p bc using other signals to make some sort of embedding for the signal; embed signal m based on other signals
+        p = TransformerEncoder(
+            intermediate_dim=64,
+            num_heads= trf_encoder_hidden_dim, # one head per 2 elements in cur_phase vec
+            activation='sigmoid', #to match what's in the paper; #default is relu
+            name='cur_phase_embedder'
+        )(dic_input_node["cur_phase"])
         d = Dense(4, activation="sigmoid", name="num_vec_mapping")
         dic_lane = {}
         for i, m in enumerate(self.dic_traffic_env_conf["list_lane_order"]):
@@ -138,9 +160,14 @@ class TransferDQNAgent(NetworkAgent):
                 m1, m2 = phase.split("_")
                 list_phase_pressure.append(concatenate([dic_lane[m1], dic_lane[m2]], name=phase))
 
-        constant = Lambda(relation, arguments={"dic_traffic_env_conf": self.dic_traffic_env_conf},
+        constant = Lambda(relation, arguments={"dic_traffic_env_conf": dic_traffic_env_conf},
                         name="constant")(dic_input_node["lane_num_vehicle"])
-        relation_embedding = Embedding(2, 4, name="relation_embedding")(constant)
+        relation_embedding_func = TransformerEncoder(
+            intermediate_dim=64,
+            num_heads= trf_encoder_hidden_dim, # one head per 2 elements in cur_phase vec
+            name='relation_embedder'
+        )
+        relation_embedding = relation_embedding_func(constant)
 
         # rotate the phase pressure
         if self.dic_agent_conf["ROTATION"]: # TRUE
