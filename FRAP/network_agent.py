@@ -323,13 +323,15 @@ class NetworkAgent(Agent):
 
         for i in range(len(sample_slice)):
             state, action, next_state, reward, instant_reward, _ = sample_slice[i]
+            state += [i] # if state is a list
 
-            for feature_name in self.dic_traffic_env_conf["LIST_STATE_FEATURE"]:
+            for feature_name in self.dic_traffic_env_conf["LIST_STATE_FEATURE"] + ['timestep']:
                 dic_state_feature_arrays[feature_name].append(state[feature_name])
+            # dic_state_feature_arrays['timestep'].append(i)
 
             _state = []
             _next_state = []
-            for feature_name in self.dic_traffic_env_conf["LIST_STATE_FEATURE"]:
+            for feature_name in self.dic_traffic_env_conf["LIST_STATE_FEATURE"] + ['timestep']:
                 _state.append([state[feature_name]])
                 _next_state.append([next_state[feature_name]])
             target = self.q_network.predict(_state)
@@ -346,7 +348,7 @@ class NetworkAgent(Agent):
             Y.append(final_target)
 
         self.Xs = [np.array(dic_state_feature_arrays[feature_name]) for feature_name in
-                   self.dic_traffic_env_conf["LIST_STATE_FEATURE"]]
+                   self.dic_traffic_env_conf["LIST_STATE_FEATURE"] + ['timestep']]
         self.Y = np.array(Y)
 
 
@@ -358,21 +360,21 @@ class NetworkAgent(Agent):
                 dic_phase_expansion = self.dic_traffic_env_conf["phase_expansion_4_lane"]
             else:
                 dic_phase_expansion = self.dic_traffic_env_conf["phase_expansion"]
-            for feature in self.dic_traffic_env_conf["LIST_STATE_FEATURE"]:
+            for feature in self.dic_traffic_env_conf["LIST_STATE_FEATURE"] + ['timestep']:
                 if feature == "cur_phase":
                     inputs.append(np.array([dic_phase_expansion[s[feature][0]]]))
                 else:
                     inputs.append(np.array([s[feature]]))
             return inputs
         else:
-            return [np.array([s[feature]]) for feature in self.dic_traffic_env_conf["LIST_STATE_FEATURE"]]
+            return [np.array([s[feature]]) for feature in self.dic_traffic_env_conf["LIST_STATE_FEATURE"] + ['timestep']]
 
 
     def choose_action(self, count, state):
 
         ''' choose the best action for current state '''
 
-        q_values = self.q_network.predict(self.convert_state_to_input(state))
+        q_values = self.q_network.predict(self.convert_state_to_input(state)) # hopefully timestep is here
         if random.random() <= self.dic_agent_conf["EPSILON"]:  # continue explore new Random Action
             action = random.randrange(len(q_values[0]))
         else:  # exploitation
