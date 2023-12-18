@@ -277,7 +277,6 @@ class FRAP_TRANSFORMERAgent(RLAgent):
         :param key: key to store this record, e.g., episode_step_agentid
         :return: None
         '''
-        #TODO: MAY NEED TO UPDATE KEY TO JUST BE EPISODE STEP
         self.replay_buffer.append((key, (last_obs, last_phase, actions, rewards, obs, cur_phase)))
 
     def _batchwise(self, samples):
@@ -329,8 +328,7 @@ class FRAP_TRANSFORMERAgent(RLAgent):
         '''
         if len(self.replay_buffer) < self.batch_size:
             return
-        # samples = random.sample(self.replay_buffer, self.batch_size)
-        samples = self.replay_buffer # TODO: SET BATCH_SIZE TO BE SIZE OF REPLAY_BUFFER
+        samples = self.replay_buffer
         b_t, b_tp, rewards, actions, timestep = self._batchwise(samples)
         out = self.target_model((b_tp, timestep), train=False) # (batch_size,num_actions)
         target = rewards + self.gamma * torch.max(out, dim=1)[0] # (batch_size)
@@ -394,7 +392,7 @@ class FRAP_TRANSFORMER(nn.Module):
         relation_embed_size = 4
 
         # TODO: put into config
-        self.k = 20 #change to be dic_feature_dim[D_TIMESTEP] config call
+        self.k = 20 #
         self.h = 4 # num attn heads
         self.d_k = 8 # dim of linearly projected keys and heads
         self.d_v = 8 # dim of linearly projected values
@@ -413,37 +411,16 @@ class FRAP_TRANSFORMER(nn.Module):
         self.lane_conv = nn.Conv2d(2*self.lane_embed_units, 20, kernel_size=(1, 1))
 
         self.relation_embedding = nn.Embedding(2, relation_embed_size)
-
-        # new stuff stuff # TODO: can try different merges like multiply and add
-        # self.flattened = K.permute_dimensions(Reshape((self.k, 56))(lane_conv), (0, 2, 1))
-        # self.position_encodings = self.pos_encodings(foo, 1) #TODO: update foo to be timestep
-        # self.q_network_input = add([self.flattened, self.position_encodings]) # could be multiply also; robot one used add
-        # # TransformerEncoder
-        # hidden_layer = self.encoder(q_network_input, None, True)
-        # hidden_layer2 = K.permute_dimensions(hidden_layer, (0, 2, 1))
-        # hidden_layer2 = K.permute_dimensions(Reshape((self.k, 8, 7))(hidden_layer2), (0, 2, 3, 1))
-
-        # before_merge = Conv2D(1, kernel_size=(1, 1), activation="linear", name="befor_merge")(hidden_layer2)
-        # q_values = Lambda(lambda x: K.sum(x, axis=2), name="q_values")(Reshape((8, 7))(before_merge))
-        
-        # self.relation_conv = nn.Conv2d(relation_embed_size, 20, kernel_size=(1, 1))
-        # self.encoder = 
-
         self.hidden_layer = nn.Conv2d(20, 20, kernel_size=(1, 1))
         self.before_merge = nn.Conv2d(20, 1, kernel_size=(1, 1))
 
-    #TODOne: CONVERT ME
     def _pos_encodings(self, batch_size, timestep):
         d = self.d_model
         timestep_encoding = np.array([np.sin(timestep / (100**((2*i) / d))) for i in range(d)]).reshape(1, 20, 1)
-        # batch_size = x.shape[0] # assuming batch size is in the front
-        # batch_size = K.shape(x)[0]
         constant = torch.from_numpy(timestep_encoding)
-        # constant = K.constant(timestep_encoding)
         constant = K.tile(constant, (batch_size, 1, 56))
         constant = torch.tile(constant(batch_size, 1, 56))
         constant = constant.permute(0, 2, 1)
-        # constant = K.permute_dimensions(constant, (0,2,1))
     return constant
 
     def _forward(self, states_tuple):
@@ -510,8 +487,6 @@ class FRAP_TRANSFORMER(nn.Module):
         relations = relations.permute(0, 3, 1, 2)  # Move channels up
         relations = F.relu(self.relation_conv(relations))  # Pair demand representation
 
-        # TODO: foo
-                # new stuff stuff # TODO: can try different merges like multiply and add
         flattened = torch.reshape(lane_conv, self.k, 56).permute(0, 2, 1)
         position_encodings = self._pos_encodings(batch_size, timestep) #TODO: update foo to be timestep
         q_network_input = torch.add([flattened, position_encodings]) # could be multiply also; robot one used add
@@ -520,19 +495,9 @@ class FRAP_TRANSFORMER(nn.Module):
         transformer_rep2 = transformer_rep.permute(0, 2, 1)
         transformer_rep2 = torch.reshape(transformer_rep2, self.k, 8, 7).permute(0, 2, 3, 1)
 
-        # phase score
-        # combine_features = F.relu()
-
-        # before_merge = Conv2D(1, kernel_size=(1, 1), activation="linear", name="befor_merge")(hidden_layer2)
-        # q_values = Lambda(lambda x: K.sum(x, axis=2), name="q_values")(Reshape((8, 7))(before_merge))
 
         # Phase pair competition
-        # combine_features = rotated_phases * relations
-        # combine_features = F.relu(self.hidden_layer(combine_features))  # Phase competition representation
         combine_features = self.before_merge(transformer_rep2)  # Pairwise competition result
-
-        # # Phase score
-        # combine_features = torch.reshape(combine_features, (batch_size, self.oshape, self.oshape - 1))
         q_values = (lambda x: torch.sum(x, dim=2))(combine_features) # (b,8)
         return q_values
         
